@@ -1,0 +1,105 @@
+services:
+    web:
+        build:
+            context: ./
+            dockerfile: ./.docker/php/Dockerfile.local
+        ports:
+            - ${APP_PORT:-8000}:80
+        volumes:
+            - ./:/var/www/html:cached
+
+            - laravel-vendor:/var/www/html/vendor
+
+            # storage/ sengaja TIDAK memakai named volume. Sebelumnya
+            # "laravel-storage:/var/www/html/storage" menimpa bind mount di atas, sehingga
+            # folder storage/ di host dan di container jadi dua isi yang berbeda: gambar seeder
+            # (profile-pictures/male|female) hanya ada di host dan tak terbaca aplikasi,
+            # sedangkan file hasil upload hanya ada di dalam volume dan tak pernah muncul di host.
+            #
+            # public/storage di-mount langsung ke storage/app/public sebagai pengganti symlink,
+            # karena symlink tidak bisa diandalkan di Windows. Di production (Linux, tanpa Docker)
+            # tetap pakai `php artisan storage:link` seperti biasa.
+            - ./storage/app/public:/var/www/html/public/storage
+        networks:
+            - api-blue
+        depends_on:
+            - mysql
+            - redis
+    mysql:
+        image: mysql/mysql-server:${MYSQL_VERSION:-8.0}
+        ports:
+            - ${FORWARD_DB_PORT:-3306}:3306
+        environment:
+            MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass}
+            MYSQL_DATABASE: ${DB_DATABASE:-laravel_db}
+            MYSQL_USER: ${DB_USERNAME:-laravel}
+            MYSQL_PASSWORD: ${DB_PASSWORD:-secret123}
+        volumes:
+            - mysql-data:/var/lib/mysql
+        networks:
+            - api-blue
+        healthcheck:
+            test: ["CMD", "mysqladmin", "ping", "-p${DB_ROOT_PASSWORD}"]
+            retries: 3
+            timeout: 5s
+
+    redis:
+        image: redis:alpine
+        ports:
+            - ${FORWARD_REDIS_PORT:-6379}:6379
+        volumes:
+            - redis-data:/data
+        networks:
+            - api-blue
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            retries: 3
+            timeout: 5s
+
+    meilisearch:
+        image: getmeili/meilisearch:latest
+        ports:
+            - ${FORWARD_MEILISEARCH_PORT:-7700}:7700
+        environment:
+            MEILI_MASTER_KEY: ${MEILISEARCH_KEY:-masterKey123}
+            MEILI_ENV: development
+            MEILI_NO_ANALYTICS: true
+        volumes:
+            - meilisearch-data:/meili_data
+        networks:
+            - api-blue
+        healthcheck:
+            # Sebelumnya memakai `wget --spider http://localhost:7700/health` dan selalu
+            # gagal: wget me-resolve "localhost" ke IPv6 ::1, sedangkan Meilisearch hanya
+            # listen di IPv4 (0.0.0.0:7700) -> "Connection refused". Pakai IP v4 eksplisit.
+            test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/health"]
+            retries: 3
+            timeout: 5s
+            interval: 10s
+
+    phpmyadmin:
+        image: phpmyadmin/phpmyadmin:latest
+        ports:
+            - ${FORWARD_PHPMYADMIN_PORT:-8080}:80
+        environment:
+            PMA_HOST: mysql
+            PMA_PORT: 3306
+            PMA_USER: ${DB_USERNAME:-admin}
+            PMA_PASSWORD: ${DB_PASSWORD:-secret123}
+            MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass}
+            PMA_ARBITRARY: 1
+            UPLOAD_LIMIT: 100M
+        networks:
+            - api-blue
+        depends_on:
+            - mysql
+
+networks:
+    api-blue:
+        driver: bridge
+
+volumes:
+    laravel-vendor:
+    mysql-data:
+    redis-data:
+    meilisearch-data:
